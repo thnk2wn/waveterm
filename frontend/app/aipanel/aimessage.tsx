@@ -227,9 +227,7 @@ export const AIMessage = memo(({ message, isStreaming }: AIMessageProps) => {
                         : "min-w-[min(100%,500px)]"
                 )}
             >
-                {displayParts.length === 0 && !isStreaming && !thinkingData ? (
-                    <div className="whitespace-pre-wrap break-words">(no text content)</div>
-                ) : (
+                {displayParts.length === 0 && !isStreaming && !thinkingData ? null : (
                     <>
                         {groupedParts.map((group, index: number) =>
                             group.type === "toolgroup" ? (

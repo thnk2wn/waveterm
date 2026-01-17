@@ -46,6 +46,23 @@
             "high"
           ]
         },
+        "ai:verbosity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Text verbosity level (OpenAI Responses API only)"
+        },
+        "agent:enabled": {
+          "type": "boolean"
+        },
+        "agent:maxiterations": {
+          "type": "integer",
+          "maximum": 50,
+          "minimum": 1
+        },
         "ai:endpoint": {
           "type": "string"
         },

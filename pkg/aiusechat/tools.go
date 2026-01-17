@@ -191,6 +191,10 @@ func GenerateTabStateAndTools(ctx context.Context, tabid string, widgetAccess bo
 		if viewTypes["term"] {
 			tools = append(tools, GetTermGetScrollbackToolDefinition(tabid))
 			// tools = append(tools, GetTermCommandOutputToolDefinition(tabid))
+			// Add terminal command execution tool if agent mode is enabled
+			if chatOpts != nil && chatOpts.AgentMode {
+				tools = append(tools, GetRunTerminalCommandToolDefinition(tabid))
+			}
 		}
 		if viewTypes["web"] {
 			tools = append(tools, GetWebNavigateToolDefinition(tabid))

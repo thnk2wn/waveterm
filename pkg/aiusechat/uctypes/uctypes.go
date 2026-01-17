@@ -157,6 +157,10 @@ const (
 )
 
 const (
+	OpenAIDefaultVerbosity = "medium"
+)
+
+const (
 	AIModeQuick    = "waveai@quick"
 	AIModeBalanced = "waveai@balanced"
 	AIModeDeep     = "waveai@deep"
@@ -210,6 +214,7 @@ func (c *AIModeConfig) HasCapability(cap string) bool {
 type UIMessageDataToolUse struct {
 	ToolCallId          string `json:"toolcallid"`
 	ToolName            string `json:"toolname"`
+	ToolDisplayName     string `json:"tooldisplayname,omitempty"`
 	ToolDesc            string `json:"tooldesc"`
 	Status              string `json:"status"`
 	RunTs               int64  `json:"runts,omitempty"`
@@ -278,6 +283,7 @@ type AIOptsType struct {
 	MaxTokens     int      `json:"maxtokens,omitempty"`
 	TimeoutMs     int      `json:"timeoutms,omitempty"`
 	ThinkingLevel string   `json:"thinkinglevel,omitempty"` // ThinkingLevelLow, ThinkingLevelMedium, or ThinkingLevelHigh
+	Verbosity     string   `json:"verbosity,omitempty"`     // Text verbosity level (OpenAI Responses API only)
 	AIMode        string   `json:"aimode,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
 	WaveAIPremium bool     `json:"waveaipremium,omitempty"`
@@ -524,6 +530,10 @@ type WaveChatOpts struct {
 	AllowNativeWebSearch bool
 	BuilderId            string
 	BuilderAppId         string
+
+	// Agent mode settings
+	AgentMode          bool
+	MaxAgentIterations int
 
 	// ephemeral to the step
 	TabState       string

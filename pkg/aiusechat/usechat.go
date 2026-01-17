@@ -46,10 +46,16 @@ var (
 	activeChats = ds.MakeSyncMap[bool]() // key is chatid
 )
 
-func getSystemPrompt(apiType string, model string, isBuilder bool, hasToolsCapability bool, widgetAccess bool) []string {
+func getSystemPrompt(apiType string, model string, isBuilder bool, hasToolsCapability bool, widgetAccess bool, agentMode bool) []string {
 	if isBuilder {
 		return []string{}
 	}
+
+	// Agent mode gets its own specialized prompt
+	if agentMode {
+		return []string{SystemPromptText_Agent}
+	}
+
 	useNoToolsPrompt := !hasToolsCapability || !widgetAccess
 	basePrompt := SystemPromptText_OpenAI
 	if useNoToolsPrompt {
@@ -71,7 +77,7 @@ func isLocalEndpoint(endpoint string) bool {
 	return strings.Contains(endpointLower, "localhost") || strings.Contains(endpointLower, "127.0.0.1")
 }
 
-func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo, aiModeName string) (*uctypes.AIOptsType, error) {
+func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo, aiModeName string) (*uctypes.AIOptsType, bool, int, error) {
 	maxTokens := DefaultMaxTokens
 	if builderMode {
 		maxTokens = BuilderMaxTokens
@@ -81,20 +87,20 @@ func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo,
 	}
 	aiMode, config, err := resolveAIMode(aiModeName, premium)
 	if err != nil {
-		return nil, err
+		return nil, false, 0, err
 	}
 	if config.WaveAICloud && !telemetry.IsTelemetryEnabled() {
-		return nil, fmt.Errorf("Wave AI cloud modes require telemetry to be enabled")
+		return nil, false, 0, fmt.Errorf("Wave AI cloud modes require telemetry to be enabled")
 	}
 	apiToken := config.APIToken
 	if apiToken == "" && config.APITokenSecretName != "" {
 		secret, exists, err := secretstore.GetSecret(config.APITokenSecretName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve secret %s: %w", config.APITokenSecretName, err)
+			return nil, false, 0, fmt.Errorf("failed to retrieve secret %s: %w", config.APITokenSecretName, err)
 		}
 		secret = strings.TrimSpace(secret)
 		if !exists || secret == "" {
-			return nil, fmt.Errorf("secret %s not found or empty", config.APITokenSecretName)
+			return nil, false, 0, fmt.Errorf("secret %s not found or empty", config.APITokenSecretName)
 		}
 		apiToken = secret
 	}
@@ -103,12 +109,16 @@ func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo,
 	if config.Endpoint != "" {
 		baseUrl = config.Endpoint
 	} else {
-		return nil, fmt.Errorf("no ai:endpoint configured for AI mode %s", aiMode)
+		return nil, false, 0, fmt.Errorf("no ai:endpoint configured for AI mode %s", aiMode)
 	}
 
 	thinkingLevel := config.ThinkingLevel
 	if thinkingLevel == "" {
 		thinkingLevel = uctypes.ThinkingLevelMedium
+	}
+	verbosity := config.Verbosity
+	if verbosity == "" {
+		verbosity = uctypes.OpenAIDefaultVerbosity
 	}
 	opts := &uctypes.AIOptsType{
 		Provider:      config.Provider,
@@ -116,6 +126,7 @@ func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo,
 		Model:         config.Model,
 		MaxTokens:     maxTokens,
 		ThinkingLevel: thinkingLevel,
+		Verbosity:     verbosity,
 		AIMode:        aiMode,
 		Endpoint:      baseUrl,
 		Capabilities:  config.Capabilities,
@@ -124,7 +135,13 @@ func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo,
 	if apiToken != "" {
 		opts.APIToken = apiToken
 	}
-	return opts, nil
+
+	// Return agent settings from config
+	agentMaxIter := config.AgentMaxIterations
+	if agentMaxIter == 0 {
+		agentMaxIter = 10 // Default from schema
+	}
+	return opts, config.AgentEnabled, agentMaxIter, nil
 }
 
 func shouldUseChatCompletionsAPI(model string) bool {
@@ -381,6 +398,11 @@ func processAllToolCalls(backend UseChatBackend, stopReason *uctypes.WaveStopRea
 }
 
 func RunAIChat(ctx context.Context, sseHandler *sse.SSEHandlerCh, backend UseChatBackend, chatOpts uctypes.WaveChatOpts) (*uctypes.AIMetrics, error) {
+	// Route to agent mode if enabled
+	if chatOpts.AgentMode {
+		return RunAIChatAgent(ctx, sseHandler, backend, chatOpts)
+	}
+
 	if !activeChats.SetUnless(chatOpts.ChatId, true) {
 		return nil, fmt.Errorf("chat %s is already running", chatOpts.ChatId)
 	}
@@ -483,6 +505,144 @@ func RunAIChat(ctx context.Context, sseHandler *sse.SSEHandlerCh, backend UseCha
 		}
 		break
 	}
+	return metrics, nil
+}
+
+// RunAIChatAgent runs the AI chat in agent mode using LangChain
+func RunAIChatAgent(ctx context.Context, sseHandler *sse.SSEHandlerCh, backend UseChatBackend, chatOpts uctypes.WaveChatOpts) (*uctypes.AIMetrics, error) {
+	if !activeChats.SetUnless(chatOpts.ChatId, true) {
+		return nil, fmt.Errorf("chat %s is already running", chatOpts.ChatId)
+	}
+	defer activeChats.Delete(chatOpts.ChatId)
+
+	// Set up metrics
+	stepNum := chatstore.DefaultChatStore.CountUserMessages(chatOpts.ChatId)
+	aiProvider := chatOpts.Config.Provider
+	if aiProvider == "" {
+		aiProvider = uctypes.AIProvider_Custom
+	}
+	isLocal := isLocalEndpoint(chatOpts.Config.Endpoint)
+	metrics := &uctypes.AIMetrics{
+		ChatId:  chatOpts.ChatId,
+		StepNum: stepNum,
+		Usage: uctypes.AIUsage{
+			APIType: chatOpts.Config.APIType,
+			Model:   chatOpts.Config.Model,
+		},
+		WidgetAccess:  chatOpts.WidgetAccess,
+		ToolDetail:    make(map[string]int),
+		ThinkingLevel: chatOpts.Config.ThinkingLevel,
+		AIMode:        chatOpts.Config.AIMode,
+		AIProvider:    aiProvider,
+		IsLocal:       isLocal,
+	}
+
+	// Generate tab state and tools
+	if chatOpts.TabStateGenerator != nil {
+		tabState, tabTools, tabId, tabErr := chatOpts.TabStateGenerator()
+		if tabErr == nil {
+			chatOpts.TabState = tabState
+			chatOpts.TabTools = tabTools
+			chatOpts.TabId = tabId
+		}
+	}
+
+	// Use agent-specific system prompt
+	agentPrompt := SystemPromptText_Agent
+	if chatOpts.Config.HasCapability(uctypes.AICapabilityTools) && chatOpts.WidgetAccess {
+		chatOpts.SystemPrompt = []string{agentPrompt}
+	}
+
+	// Get the last user message as the task
+	chat := chatstore.DefaultChatStore.Get(chatOpts.ChatId)
+	if chat == nil {
+		return metrics, fmt.Errorf("chat not found")
+	}
+
+	// For now, use the standard RunAIChat loop with agent prompts
+	// TODO: Full LangChain integration would go here
+	// This is a placeholder that enables agent mode features (terminal commands, agent prompts)
+	// while using Wave's existing chat loop
+
+	// Set max iterations if not set
+	if chatOpts.MaxAgentIterations == 0 {
+		chatOpts.MaxAgentIterations = 10
+	}
+
+	// Send agent mode indicator to UI
+	_ = sseHandler.AiMsgData("data-agent-mode", "start", map[string]any{
+		"max_iterations": chatOpts.MaxAgentIterations,
+	})
+
+	// Run the chat loop with agent configuration
+	iterationCount := 0
+	var cont *uctypes.WaveContinueResponse
+
+	for iterationCount < chatOpts.MaxAgentIterations {
+		// Refresh tab state each iteration
+		if chatOpts.TabStateGenerator != nil {
+			tabState, tabTools, tabId, tabErr := chatOpts.TabStateGenerator()
+			if tabErr == nil {
+				chatOpts.TabState = tabState
+				chatOpts.TabTools = tabTools
+				chatOpts.TabId = tabId
+			}
+		}
+
+		_ = sseHandler.AiMsgData("data-agent-iteration", "start", map[string]any{
+			"iteration": iterationCount + 1,
+		})
+
+		stopReason, rtnMessages, err := runAIChatStep(ctx, sseHandler, backend, chatOpts, cont)
+		metrics.RequestCount++
+
+		if stopReason != nil {
+			logutil.DevPrintf("agent iteration %d stopreason: %s\n", iterationCount+1, stopReason.Kind)
+		}
+
+		if err != nil {
+			metrics.HadError = true
+			_ = sseHandler.AiMsgError(err.Error())
+			_ = sseHandler.AiMsgFinish("", nil)
+			break
+		}
+
+		// Post messages to chat store
+		for _, msg := range rtnMessages {
+			if msg != nil {
+				if err := chatstore.DefaultChatStore.PostMessage(chatOpts.ChatId, &chatOpts.Config, msg); err != nil {
+					log.Printf("Failed to post message: %v", err)
+				}
+			}
+		}
+
+		// Update usage metrics
+		if len(rtnMessages) > 0 {
+			usage := getUsage(rtnMessages)
+			metrics.Usage.InputTokens += usage.InputTokens
+			metrics.Usage.OutputTokens += usage.OutputTokens
+		}
+
+		// Handle tool use
+		if stopReason != nil && stopReason.Kind == uctypes.StopKindToolUse {
+			metrics.ToolUseCount += len(stopReason.ToolCalls)
+			processAllToolCalls(backend, stopReason, chatOpts, sseHandler, metrics)
+			cont = &uctypes.WaveContinueResponse{
+				Model:            chatOpts.Config.Model,
+				ContinueFromKind: uctypes.StopKindToolUse,
+			}
+			iterationCount++
+			continue
+		}
+
+		// Task complete
+		break
+	}
+
+	_ = sseHandler.AiMsgData("data-agent-mode", "end", map[string]any{
+		"iterations_used": iterationCount,
+	})
+
 	return metrics, nil
 }
 
@@ -670,7 +830,7 @@ func WaveAIPostMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "aimode is required in request body", http.StatusBadRequest)
 		return
 	}
-	aiOpts, err := getWaveAISettings(premium, builderMode, *rtInfo, req.AIMode)
+	aiOpts, agentMode, agentMaxIter, err := getWaveAISettings(premium, builderMode, *rtInfo, req.AIMode)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("WaveAI configuration error: %v", err), http.StatusInternalServerError)
 		return
@@ -692,8 +852,10 @@ func WaveAIPostMessageHandler(w http.ResponseWriter, r *http.Request) {
 		AllowNativeWebSearch: true,
 		BuilderId:            req.BuilderId,
 		BuilderAppId:         req.BuilderAppId,
+		AgentMode:            agentMode,
+		MaxAgentIterations:   agentMaxIter,
 	}
-	chatOpts.SystemPrompt = getSystemPrompt(chatOpts.Config.APIType, chatOpts.Config.Model, chatOpts.BuilderId != "", chatOpts.Config.HasCapability(uctypes.AICapabilityTools), chatOpts.WidgetAccess)
+	chatOpts.SystemPrompt = getSystemPrompt(chatOpts.Config.APIType, chatOpts.Config.Model, chatOpts.BuilderId != "", chatOpts.Config.HasCapability(uctypes.AICapabilityTools), chatOpts.WidgetAccess, agentMode)
 
 	if req.TabId != "" {
 		chatOpts.TabStateGenerator = func() (string, []uctypes.ToolDefinition, string, error) {

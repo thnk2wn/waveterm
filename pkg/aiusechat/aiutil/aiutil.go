@@ -231,6 +231,11 @@ func CreateToolUseData(toolCallID, toolName string, arguments string, chatOpts u
 		return toolUseData
 	}
 
+	// Set display name if available
+	if toolDef.DisplayName != "" {
+		toolUseData.ToolDisplayName = toolDef.DisplayName
+	}
+
 	var parsedArgs any
 	if err := json.Unmarshal([]byte(arguments), &parsedArgs); err != nil {
 		toolUseData.Status = uctypes.ToolUseStatusError

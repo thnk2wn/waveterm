@@ -193,7 +193,7 @@ func buildOpenAIHTTPRequest(ctx context.Context, inputs []any, chatOpts uctypes.
 	// If continuing from premium rate limit, downgrade to default model and low thinking
 	if cont != nil && cont.ContinueFromKind == uctypes.StopKindPremiumRateLimit {
 		opts.Model = uctypes.DefaultOpenAIModel
-		opts.ThinkingLevel = uctypes.ThinkingLevelLow
+		opts.ThinkingLevel = uctypes.ThinkingLevelMedium
 	}
 
 	if opts.Model == "" {
@@ -235,7 +235,7 @@ func buildOpenAIHTTPRequest(ctx context.Context, inputs []any, chatOpts uctypes.
 		Stream:          true,
 		StreamOptions:   &StreamOptionsType{IncludeObfuscation: false},
 		MaxOutputTokens: maxTokens,
-		Text:            &TextType{Verbosity: "low"},
+		Text:            &TextType{Verbosity: "medium"},
 	}
 
 	// Add system prompt as instructions if provided

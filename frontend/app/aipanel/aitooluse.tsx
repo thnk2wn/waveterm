@@ -273,7 +273,7 @@ const AIToolUse = memo(({ part, isStreaming }: AIToolUseProps) => {
         >
             <div className="flex items-center gap-2">
                 <span className="font-bold">{statusIcon}</span>
-                <div className="font-semibold">{toolData.toolname}</div>
+                <div className="font-semibold">{toolData.tooldisplayname || toolData.toolname}</div>
                 <div className="flex-1" />
                 {isFileWriteTool &&
                     toolData.inputfilename &&

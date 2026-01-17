@@ -15,6 +15,7 @@ type WaveUIDataTypes = {
     tooluse: {
         toolcallid: string;
         toolname: string;
+        tooldisplayname?: string;
         tooldesc: string;
         status: "pending" | "error" | "completed";
         runts?: number;

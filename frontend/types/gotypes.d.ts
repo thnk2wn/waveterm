@@ -23,6 +23,9 @@ declare global {
         "ai:apitype"?: string;
         "ai:model"?: string;
         "ai:thinkinglevel"?: string;
+        "ai:verbosity"?: string;
+        "agent:enabled"?: boolean;
+        "agent:maxiterations"?: number;
         "ai:endpoint"?: string;
         "ai:azureapiversion"?: string;
         "ai:apitoken"?: string;
